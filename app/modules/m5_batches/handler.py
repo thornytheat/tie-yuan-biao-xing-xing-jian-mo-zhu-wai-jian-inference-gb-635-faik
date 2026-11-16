@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request
 
 from ... import errors
 from ...web import Ctx, get_ctx, render
+from ..m8_erasure import guard as erasure_guard
 from . import resume, state
 from . import service
 
@@ -15,6 +16,7 @@ def _resolved(ctx: Ctx, batch_id: str | None) -> str:
     batch = ctx.current_batch(batch_id)
     if batch is None:
         raise errors.NotFound("还没有任何批次，请先跑一次接入", code="B_EMPTY")
+    erasure_guard.assert_batch_readable(ctx.store, batch["batch_id"])
     return batch["batch_id"]
 
 
@@ -29,6 +31,7 @@ def api_batches(limit: int = 30, ctx: Ctx = Depends(get_ctx)) -> dict:
 
 @router.get("/api/batches/{batch_id}")
 def api_batch(batch_id: str, ctx: Ctx = Depends(get_ctx)) -> dict:
+    erasure_guard.assert_batch_readable(ctx.store, batch_id)
     bundle = service.bundle(ctx.store, batch_id)
     return {
         "batch": service.row(bundle["batch"],

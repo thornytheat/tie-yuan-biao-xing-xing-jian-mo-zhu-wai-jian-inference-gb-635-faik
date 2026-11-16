@@ -31,7 +31,24 @@ STAGE_LABELS = {
     "keys": "键推断",
     "spec": "规格单",
     "impact": "影响评估",
+    "erasure": "授权撤回清除",
 }
+
+# M8 会员撤回授权清除
+# 会员主体表：这些列的原值在撤回后必须抹除（会员号本身也是可识别原值）
+ERASURE_MEMBER_TABLE = "odl_member"
+ERASURE_MEMBER_KEY_COLUMN = "member_id"
+ERASURE_MEMBER_PII_COLUMNS = ("member_id", "member_name", "phone")
+# 子表外键列：引用会员号的列，清除该会员取值但保留订单行与度量
+ERASURE_REF_TABLE = "odl_sale_order"
+ERASURE_REF_COLUMN = "member_id"
+# 清除后占位符（不含原值、不可反推）
+ERASURE_PLACEHOLDER = "〔已按授权撤回清除〕"
+# 盐化哈希领域前缀，版本号固化在输入里，升级算法时换新前缀
+ERASURE_HASH_PREFIX = "starmodel:member:v1:"
+# 清除单与凭据状态
+ERASURE_STATUS = ("running", "interrupted", "done")
+ERASURE_UNIT_STATUS = ("pending", "running", "done")
 
 # 编码回退链：gb18030 是 gbk/gb2312 的超集，放在最后兜底
 ENCODING_CHAIN = ("utf-8-sig", "utf-8", "gb18030")

@@ -17,6 +17,7 @@ from ..m3_profile import rules as m3_rules
 from ..m3_profile import service as m3_service
 from ..m4_keys import service as m4_service
 from ..m6_spec import spec_out
+from ..m8_erasure import suppression as m8_suppression
 from . import resume, state
 
 
@@ -159,8 +160,11 @@ def _pipeline(*, settings, intake, batch, input_digest, inputs, params,
     } for item in modeled.keys]
 
     store.save_run(
-        batch=batch, tables=tables, columns=profiled.columns, keys=key_rows,
-        star=star_rows, quarantine=quarantine, conflicts=profiled.conflicts,
+        batch=batch, tables=tables, columns=_suppressed_columns(store, intake, profiled.columns),
+        keys=key_rows,
+        star=star_rows,
+        quarantine=_suppressed_quarantine(store, intake, quarantine),
+        conflicts=_suppressed_conflicts(store, intake, profiled.conflicts),
         row_ledger=profiled.row_ledger, stages=stages, totals=totals,
         manifest=manifest_doc)
 
@@ -298,3 +302,34 @@ def accounts_of(store, batch_id: str) -> dict:
 
 def codes_of(rows: list) -> list:
     return sorted({row["code"] for row in rows if row.get("code")})
+
+
+def _suppressed_columns(store, intake, columns: list[dict]) -> list[dict]:
+    """M8 重放防回灌：已撤回会员的 PII 样本值不写库（聚合数已算完，不受影响）。"""
+    guard = m8_suppression.SuppressionGuard(store)
+    if not guard.active:
+        return columns
+    member_ids = m8_suppression.member_ids_from_intake(intake)
+    return guard.scrub_columns(columns, member_ids)
+
+
+def _suppressed_quarantine(store, intake, rows: list[dict]) -> list[dict]:
+    """隔离记录里的会员原值同样按抑制规则脱敏，避免旧样本重放走隔离区回灌。"""
+    guard = m8_suppression.SuppressionGuard(store)
+    if not guard.active:
+        return rows
+    member_ids = set()
+    for values in m8_suppression.member_ids_from_intake(intake).values():
+        member_ids.update(values)
+    return guard.scrub_quarantine(rows, member_ids)
+
+
+def _suppressed_conflicts(store, intake, rows: list[dict]) -> list[dict]:
+    """冲突表里的会员原值按抑制规则脱敏，键冲突的计数与结构保留。"""
+    guard = m8_suppression.SuppressionGuard(store)
+    if not guard.active:
+        return rows
+    member_ids = set()
+    for values in m8_suppression.member_ids_from_intake(intake).values():
+        member_ids.update(values)
+    return guard.scrub_conflicts(rows, member_ids)

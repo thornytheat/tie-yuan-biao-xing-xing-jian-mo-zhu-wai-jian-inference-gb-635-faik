@@ -1,7 +1,7 @@
 # 深度登记 starmodel
 
-- 规模：中型（7 个功能模块，81 个文件，83 条测试）
-- 核心规则：候选主键 = 唯一率 1 且无空值；外键 = 包含度 ≥ 0.95 且父列是单列主键（推断边另加基数比区间）；星型按「含度量 + 外键数」定事实或维度，维度按可变更列占比定 SCD；影响评估按「引用方式 × 优先级 × 变更破坏性」定中断或核对，迁移顺序取依赖拓扑序。
+- 规模：中型（8 个功能模块，89 个文件，100 条测试）
+- 核心规则：候选主键 = 唯一率 1 且无空值；外键 = 包含度 ≥ 0.95 且父列是单列主键（推断边另加基数比区间）；星型按「含度量 + 外键数」定事实或维度，维度按可变更列占比定 SCD；影响评估按「引用方式 × 优先级 × 变更破坏性」定中断或核对，迁移顺序取依赖拓扑序；M8 按会员盐化哈希清除原值并保留聚合凭据。
 - 使用者与工作流：禾丰零售数仓组（7 人）导入贴源层 DDL + 样本 CSV + 编码导出件 → 逐列剖析 → 主键外键推断 → 星型建议 → 打印规格单 → 变更前评估下游影响与迁移顺序。
 
 ## 功能模块
@@ -15,6 +15,7 @@
 | M5 版本与重跑 | 查历史、续跑、幂等重跑 | GET /api/batches | `app/modules/m5_batches/state.py` `app/modules/m5_batches/resume.py` `app/modules/m5_batches/service.py` | `tests/test_batches.py` |
 | M6 规格单导出 | 打印规格单，导出列规格与证据 | GET /api/spec | `app/modules/m6_spec/spec_out.py` `app/modules/m6_spec/csv_out.py` `app/modules/m6_spec/json_out.py` | `tests/test_spec.py` |
 | M7 建模影响评估 | 看变更影响面、迁移顺序与回滚提示，提交一条变更试算 | GET /api/impact · POST /api/impact/propose · GET /impact | `app/modules/m7_impact/impact.py` `app/modules/m7_impact/topology.py` `app/modules/m7_impact/rollback.py` | `tests/test_m7_impact.py` |
+| M8 授权撤回清除 | 按会员抹原值、查清除单与凭据、中断续跑、重放抑制 | POST /api/erasure/members · GET /api/erasure/requests · GET /erasure | `app/modules/m8_erasure/scrubber.py` `app/modules/m8_erasure/hashing.py` `app/modules/m8_erasure/suppression.py` `app/modules/m8_erasure/service.py` | `tests/test_erasure.py` |
 
 端到端：`tests/test_e2e.py`（6 条，脏样例一路走到规格单导出，并覆盖七个页面渲染）。
 
@@ -34,6 +35,10 @@
 | TRAP-22 | 渠道写 `APP`/`app`/`App`/`APP端` | 合并顺序不同结果不同 | 等价类 + 固定代表元，与行序无关 | `app/modules/m2_contract/coerce.py:125` | `tests/test_keys.py::test_trap22_alias_merge_is_order_independent` |
 | TRAP-27 | 组合键某一列为空（如门店+会员号），空值是否参与唯一性没定 | 按 `len(set(元组)) == len(元组)` 判：含空值的键免检时判唯一，全算时判不唯一，改约束的依据随机翻转；有效行 0 时该式还返回真 | 两种空值规则各算一遍，结论相反就阻断，等人工定规则；有效行 0 单独判不可判 | `app/modules/m7_impact/impact.py:194` | `tests/test_m7_impact.py::test_trap27_partial_null_key_blocks_unique_change` |
 | TRAP-28 | `store_code` 与 `Store_Code` 仅大小写不同，被当成同一列 | 折叠后去重数变小，得出「合并后仍唯一」的伪唯一结论，据此直接改名并删除旧列 | 按大小写敏感当作两列；折叠结果只用于提示伪唯一，改名列整条阻断 | `app/modules/m7_impact/impact.py:227` | `tests/test_m7_impact.py::test_trap28_case_pseudo_unique_blocks_column_merge` |
+| TRAP-29 | 会员号 `0071` 是比率小数 `0.5714` 与大整数 `9007199254740993` 的子串 | 朴素 `in` 子串匹配把聚合证据误判成会员原值，清除事务误回滚或误伤无关数据 | 边界感知匹配（非字母数字包围才算），且不生成过短补零形态 | `app/modules/m8_erasure/scrubber.py` `_contains_target` | `tests/test_erasure.py` |
+| TRAP-30 | 手机号、姓名不含会员号子串，且样本库只逐列存首条样本值 | 只按会员号子串扫描会漏掉隔离区里的手机号；按整列连坐又会抹掉其他会员 | 会员表 PII 列按列定位 + 会员号锚定，抑制过滤按值精确命中，未撤回会员不连坐 | `app/modules/m8_erasure/scrubber.py` `app/modules/m8_erasure/suppression.py` | `tests/test_erasure.py::test_erasure_scrubs_quarantine_and_conflict_rows_without_touching_unrelated` |
+| TRAP-31 | 撤回后旧样本文件原样重放 | 流水线重算把姓名/手机号/会员号重新写回数据库，清除形同虚设 | 抑制规则按盐化哈希登记，落库前过滤层脱敏，重放不回灌且其他会员正常 | `app/modules/m8_erasure/suppression.py` | `tests/test_erasure.py::test_replay_suppression_keeps_raw_values_out_of_new_batch` |
+| TRAP-32 | 清除跨多个历史批次时中途失败 | 整批回滚丢证据，或重复执行把同一格凭据记两遍 | 每批次单事务 + 单元水位续跑，凭据主键去重，重复提交返回 ERASURE_IDEMPOTENT | `app/modules/m8_erasure/service.py` | `tests/test_erasure.py::test_interrupted_erasure_resumes_from_unfinished_batch` |
 
 ## 对账规则
 
@@ -56,6 +61,9 @@
 | 运行清单 | `app/manifest.py:42`，run_id + 输入 sha256 + 参数 |
 | 原子性 | `app/store.py:171`，单事务先删后插，异常整体回滚 |
 | 记忆上限 | `app/modules/m1_ingest/sniff.py:71`，逐行流式解析，不整表读入 |
+| 授权撤回清除 | `app/modules/m8_erasure/service.py`，清除单状态机 + 单元水位，盐化哈希凭据不暴露盐 |
+| 重放防回灌 | `app/modules/m8_erasure/suppression.py`，落库前按抑制哈希过滤原值，聚合数照算 |
+| 清除期读保护 | `app/modules/m8_erasure/guard.py`，未 done 批次原值读取 409，聚合与金额可读 |
 
 M7 不进批次流水线：影响评估按请求现算，只读已落库结论与行级归一结果，不写批次、
 不新增阶段行（阶段计数仍是 5 段），因此重跑与连点都不改变批次内容。
@@ -70,3 +78,7 @@ M7 不进批次流水线：影响评估按请求现算，只读已落库结论�
   不解析下游 SQL 文本本身，也不做多跳血缘。
 - 迁移顺序只排本模块派生的变更（加约束、清洗、改类型、改列名），不含数据回填与
   双写切换这类工程动作。
+- M8 只清除本工具落库的样本值、隔离与冲突记录；源系统贴源表、已分发到库外的导出文件
+  不在本库管辖范围，需由源系统按同一清除单另行处置。
+- M8 的会员定位以 `odl_member.member_id` 为锚点，不做跨系统身份拼合（如手机号反查会员）；
+  未在任何批次落过原值的会员撤回后只登记抑制规则，不产生清除凭据。

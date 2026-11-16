@@ -223,6 +223,37 @@ REASONS = {
     "M_BAD_CHANGE": _r(
         "M_BAD_CHANGE", ERROR, "impact",
         "提交的变更不合法", "按变更类型与表列名重新提交"),
+    # ---- M8 会员撤回授权清除 ----
+    "ERASURE_REQUEST_OPENED": _r(
+        "ERASURE_REQUEST_OPENED", INFO, "erasure",
+        "会员撤回授权，清除单已建立", "盐化哈希作为凭据，盐不导出"),
+    "ERASURE_VALUE_SCRUBBED": _r(
+        "ERASURE_VALUE_SCRUBBED", INFO, "erasure",
+        "原值已抹除并留盐化哈希凭据", "凭据不含原值，不可反推会员号"),
+    "ERASURE_QUARANTINE_SCRUBBED": _r(
+        "ERASURE_QUARANTINE_SCRUBBED", INFO, "erasure",
+        "隔离记录中的会员原值已替换为占位", "行定位与哈希保留，证据链不断"),
+    "ERASURE_BATCH_DONE": _r(
+        "ERASURE_BATCH_DONE", INFO, "erasure",
+        "该批次涉及会员的原值已全部清除", "聚合数与金额合计未改动"),
+    "ERASURE_RESUMED": _r(
+        "ERASURE_RESUMED", INFO, "erasure",
+        "清除单从断点续跑，已完成单元不重复处理", "续跑不新增凭据"),
+    "ERASURE_IDEMPOTENT": _r(
+        "ERASURE_IDEMPOTENT", INFO, "erasure",
+        "该会员已完成清除，重复调用不新增凭据", "直接返回既有清除单"),
+    "ERASURE_REPLAY_SUPPRESSED": _r(
+        "ERASURE_REPLAY_SUPPRESSED", INFO, "erasure",
+        "旧样本重放命中撤回抑制规则，原值未回灌", "抑制规则按盐化哈希匹配"),
+    "ERASURE_NOTHING_FOUND": _r(
+        "ERASURE_NOTHING_FOUND", WARN, "erasure",
+        "批次内未扫到该会员的原值", "仍登记一条空结果凭据以备核验"),
+    "E_ERASURE_IN_PROGRESS": _r(
+        "E_ERASURE_IN_PROGRESS", ERROR, "erasure",
+        "清除尚未完成，涉及该会员的原值读取已拒绝", "等清除单 done 后读凭据与聚合数"),
+    "E_ERASURE_BAD_MEMBER": _r(
+        "E_ERASURE_BAD_MEMBER", ERROR, "erasure",
+        "会员号参数为空或不合法", "提交非空会员号字符串"),
 }
 
 

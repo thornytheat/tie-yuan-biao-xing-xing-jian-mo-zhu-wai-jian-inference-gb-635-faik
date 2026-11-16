@@ -13,6 +13,8 @@
 - 隔离区与冲突表可导出 CSV，运行清单可导出 JSON
 - 同输入重跑幂等；四账（列 / 行 / 引用 / 对象）自洽
 - 变更前评估：下游 SQL 与报表影响面、迁移拓扑序、回滚提示与阻断项
+- 会员撤回授权：按会员清除姓名/手机号/会员号原值，保留盐化哈希凭据、键判定聚合数与订单金额；
+  断点续跑、重复执行幂等、旧样本重放防回灌、清除完成前拒绝读取涉及原值
 
 ## 模块
 
@@ -25,6 +27,7 @@
 | M5 版本与重跑 | 批次历史、批次详情、续跑 | `GET /api/batches` `POST /api/batches/{id}/resume` |
 | M6 规格单导出 | 规格单、列规格 CSV、证据 CSV、清单 JSON | `GET /api/spec` |
 | M7 建模影响评估 | 变更影响面、迁移顺序、回滚提示、单条变更试算 | `GET /api/impact` `POST /api/impact/propose` |
+| M8 授权撤回清除 | 按会员清除原值、凭据导出、续跑、重放抑制 | `POST /api/erasure/members` `GET /api/erasure/requests` |
 
 ## 核心规则
 
@@ -73,14 +76,15 @@ pytest -q
 | `/batches` | 版本历史 |
 | `/impact` | 影响评估 |
 | `/spec` | 规格单（可打印） |
+| `/erasure` | 授权撤回清除台 |
 
 ## 目录
 
 ```text
-app/                 main/config/errors/reasons/manifest/store/web + 七个功能模块
-app/templates/       base + 7 页
+app/                 main/config/errors/reasons/manifest/store/web + 八个功能模块
+app/templates/       base + 8 页
 app/static/          theme/layout/components/print.css + 4 个 js
-docs/                DEPTH.md  DATA-DICTIONARY.md
+docs/                DEPTH.md  DATA-DICTIONARY.md  ERASURE.md
 sample_data/         DDL + 两个样本导出件（一脏一 GB18030）+ 下游登记表
 tests/               conftest + 每模块 1 个文件 + 端到端 + fixtures
 ```

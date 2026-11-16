@@ -98,6 +98,39 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS erasure_requests (
+    request_id TEXT PRIMARY KEY,
+    erasure_no TEXT NOT NULL,
+    member_hash TEXT NOT NULL UNIQUE,
+    salt_hex TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT,
+    note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_erasure_status ON erasure_requests(status);
+CREATE TABLE IF NOT EXISTS erasure_units (
+    request_id TEXT NOT NULL, batch_id TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+    in_count INTEGER NOT NULL DEFAULT 0, out_count INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT, finished_at TEXT, note TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (request_id, batch_id)
+);
+CREATE TABLE IF NOT EXISTS erasure_evidence (
+    request_id TEXT NOT NULL, batch_id TEXT NOT NULL,
+    table_name TEXT NOT NULL, column_name TEXT NOT NULL,
+    row_ref TEXT NOT NULL DEFAULT '', field_name TEXT NOT NULL DEFAULT '',
+    value_hash TEXT NOT NULL, value_length INTEGER NOT NULL,
+    value_kind TEXT NOT NULL DEFAULT '', reason_code TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (request_id, batch_id, table_name, column_name,
+                 row_ref, field_name, value_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_erasure_evidence_req ON erasure_evidence(request_id);
+CREATE TABLE IF NOT EXISTS erasure_suppressions (
+    member_hash TEXT PRIMARY KEY, request_id TEXT NOT NULL, created_at TEXT NOT NULL
+);
 """
 
 
@@ -383,6 +416,146 @@ class Store:
                 for table in ("tables_meta", "columns_meta", "key_findings", "star_objects",
                               "quarantine", "conflicts", "row_ledger")
             }
+
+    # ---------- M8 授权撤回清除 ----------
+    def create_erasure_request(self, request: dict) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO erasure_requests (request_id, erasure_no, member_hash, salt_hex,
+                        status, created_at, updated_at, finished_at, note)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (request["request_id"], request["erasure_no"], request["member_hash"],
+                 request["salt_hex"], request["status"], request["created_at"],
+                 request["updated_at"], request.get("finished_at"),
+                 request.get("note", "")))
+
+    def get_erasure_request(self, request_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM erasure_requests WHERE request_id=?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+    def find_erasure_by_member_hash(self, member_hash: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM erasure_requests WHERE member_hash=? LIMIT 1",
+                (member_hash,)).fetchone()
+        return dict(row) if row else None
+
+    def list_erasure_requests(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM erasure_requests ORDER BY created_at DESC, rowid DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_erasure_request(self, request_id: str, *, status: str | None = None,
+                               updated_at: str | None = None,
+                               finished_at: str | None = None,
+                               note: str | None = None) -> None:
+        current = self.get_erasure_request(request_id)
+        if current is None:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE erasure_requests SET status=?, updated_at=?, finished_at=?, note=?
+                   WHERE request_id=?""",
+                (status if status is not None else current["status"],
+                 updated_at or current["updated_at"],
+                 finished_at if finished_at is not None else current["finished_at"],
+                 note if note is not None else current["note"], request_id))
+
+    def upsert_erasure_unit(self, unit: dict) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO erasure_units (request_id, batch_id, stage, status, in_count,
+                        out_count, started_at, finished_at, note)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(request_id, batch_id) DO UPDATE SET
+                     stage=excluded.stage, status=excluded.status,
+                     in_count=excluded.in_count, out_count=excluded.out_count,
+                     started_at=excluded.started_at, finished_at=excluded.finished_at,
+                     note=excluded.note""",
+                (unit["request_id"], unit["batch_id"], unit.get("stage", ""),
+                 unit["status"], unit.get("in_count", 0), unit.get("out_count", 0),
+                 unit.get("started_at"), unit.get("finished_at"), unit.get("note", "")))
+
+    def list_erasure_units(self, request_id: str) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM erasure_units WHERE request_id=? ORDER BY rowid",
+                (request_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def pending_erasure_units(self, request_id: str) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM erasure_units WHERE request_id=? AND status != 'done' "
+                "ORDER BY rowid", (request_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_erasure_evidence(self, rows: list[dict]) -> int:
+        """凭据按主键去重：重复执行不会新增凭据，返回实际插入条数。"""
+        if not rows:
+            return 0
+        inserted = 0
+        with self.connect() as conn:
+            for item in rows:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO erasure_evidence (request_id, batch_id, table_name,
+                            column_name, row_ref, field_name, value_hash, value_length,
+                            value_kind, reason_code, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (item["request_id"], item["batch_id"], item["table_name"],
+                     item["column_name"], item.get("row_ref", ""),
+                     item.get("field_name", ""), item["value_hash"],
+                     item["value_length"], item.get("value_kind", ""),
+                     item["reason_code"], item["created_at"]))
+                inserted += cur.rowcount
+        return inserted
+
+    def list_erasure_evidence(self, request_id: str, batch_id: str | None = None) -> list[dict]:
+        with self.connect() as conn:
+            if batch_id:
+                rows = conn.execute(
+                    "SELECT * FROM erasure_evidence WHERE request_id=? AND batch_id=? "
+                    "ORDER BY rowid", (request_id, batch_id)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM erasure_evidence WHERE request_id=? ORDER BY rowid",
+                    (request_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_suppression(self, member_hash: str, request_id: str, created_at: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO erasure_suppressions (member_hash, request_id, created_at)"
+                " VALUES (?,?,?)", (member_hash, request_id, created_at))
+
+    def list_suppressions(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM erasure_suppressions ORDER BY created_at").fetchall()
+        return [dict(r) for r in rows]
+
+    def suppression_hashes(self) -> set[str]:
+        return {row["member_hash"] for row in self.list_suppressions()}
+
+    def list_all_batch_ids(self) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT batch_id FROM batches ORDER BY created_at, rowid").fetchall()
+        return [r["batch_id"] for r in rows]
+
+    def open_erasure_requests_for_batch(self, batch_id: str) -> list[dict]:
+        """该批次上尚未 done 的清除单：读保护据此拒绝原值读取。"""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT r.* FROM erasure_requests r
+                   JOIN erasure_units u ON u.request_id = r.request_id
+                   WHERE u.batch_id=? AND r.status != 'done'""",
+                (batch_id,)).fetchall()
+        return [dict(r) for r in rows]
 
     def _all(self, sql: str, args: tuple) -> list[dict]:
         with self.connect() as conn:

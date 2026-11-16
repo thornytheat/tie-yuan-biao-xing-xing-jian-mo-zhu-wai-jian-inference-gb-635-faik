@@ -25,6 +25,7 @@ NAV = (
     ("/impact", "影响评估", "impact"),
     ("/batches", "版本历史", "batches"),
     ("/spec", "规格单", "spec"),
+    ("/erasure", "授权撤回", "erasure"),
 )
 
 STATUS_LABELS = {"done": "完成", "running": "运行中", "failed": "失败", "aborted": "中断"}

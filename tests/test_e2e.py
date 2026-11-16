@@ -113,3 +113,61 @@ def test_repeated_import_is_idempotent_end_to_end(client_with_run):
     assert second == first
     listed = client_with_run.get("/api/batches").json()["rows"]
     assert len(listed) == 1
+
+
+def test_erasure_lifecycle_end_to_end(client_with_run):
+    """M8 全链路：提交清除 → 导出无原值、金额与键依据保留 → 重放不回灌 → 幂等。"""
+    import re
+    listed = client_with_run.get("/api/batches").json()["rows"]
+    batch_id = listed[0]["batch_id"]
+    before_amount = client_with_run.get(
+        f"/api/reconcile?batch_id={batch_id}").json()["metric_total"]
+    before_keys = client_with_run.get(f"/api/model?batch_id={batch_id}").json()["keys"]
+
+    submit = client_with_run.post("/api/erasure/members", json={"member_id": "0071"})
+    assert submit.status_code == 200
+    body = submit.json()
+    assert body["status"] == "done"
+    request_id = body["request"]["request_id"]
+
+    # 八个页面均可渲染，清除台在导航内
+    for path in PAGES + ("/erasure",):
+        page = client_with_run.get(path)
+        assert page.status_code == 200, path
+
+    # 所有读接口与导出件不含撤回会员原值（边界感知，排除 bigint 子串误判）
+    boundary = re.compile(r"(?<![0-9A-Za-z])0071(?![0-9A-Za-z])")
+    for path in (f"/api/profile?batch_id={batch_id}",
+                 f"/api/quarantine?batch_id={batch_id}",
+                 f"/api/spec?batch_id={batch_id}",
+                 f"/api/spec/export.csv?batch_id={batch_id}",
+                 f"/api/spec/evidence.csv?batch_id={batch_id}",
+                 f"/api/quarantine/export.csv?batch_id={batch_id}",
+                 f"/api/conflicts/export.csv?batch_id={batch_id}",
+                 f"/api/spec/manifest.json?batch_id={batch_id}"):
+        text = client_with_run.get(path).text
+        assert "赵一鸣" not in text and "13800001111" not in text
+        assert not boundary.search(text), path
+
+    # 金额与键判定依据保留
+    after_amount = client_with_run.get(
+        f"/api/reconcile?batch_id={batch_id}").json()["metric_total"]
+    assert after_amount == before_amount == X.FACT_METRIC_TOTAL
+    after_keys = client_with_run.get(f"/api/model?batch_id={batch_id}").json()["keys"]
+    assert after_keys == before_keys
+
+    # 凭据导出无原值、无盐
+    evidence_csv = client_with_run.get(
+        f"/api/erasure/requests/{request_id}/evidence.csv").content.decode("utf-8-sig")
+    assert "赵一鸣" not in evidence_csv and "salt" not in evidence_csv.lower()
+    assert "原值盐化哈希" in evidence_csv
+
+    # 旧样本重放（强制重算）不回灌原值
+    replay = client_with_run.post(
+        "/api/import", json={"source": "sample", "sample_cap": 250})
+    assert replay.status_code == 200
+
+    # 重复提交幂等：不新增清除单
+    again = client_with_run.post("/api/erasure/members", json={"member_id": "0071"}).json()
+    assert again["code"] == "ERASURE_IDEMPOTENT"
+    assert client_with_run.get("/api/erasure/requests").json()["total"] == 1

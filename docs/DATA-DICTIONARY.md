@@ -156,3 +156,41 @@
 - 前置被阻断时本条也阻断，记 `M_MIGRATION_BLOCKED`；变更账 = 可执行 + 阻断。
 - 回滚按迁移逆序执行，只列可执行变更；删行、孤儿值清洗、类型收窄不可原地回滚，
   记 `M_ROLLBACK_IRREVERSIBLE`，迁移前必须先建备份表。
+
+## 10 授权撤回清除（M8）
+
+清除规则的完整操作规程见 `docs/ERASURE.md`，本节只定字段与计数口径。
+
+### 10.1 清除对象
+
+| 表 | 列 | 处理 |
+|---|---|---|
+| `odl_member` | `member_id`、`member_name`、`phone` | 样本原值抹除（`sample_value=''`），证据 JSON 追加 `erasure` 段 |
+| `odl_sale_order` | `member_id` | 同上；订单行与 `order_amount` 等度量保留 |
+| `quarantine` | `raw_value`、`detail` | 命中会员原值的字段替换为占位 `〔已按授权撤回清除〕` |
+| `conflicts` | `key_value`、`kept_json`、`dropped_json` | 会员号命中按边界匹配；会员表 PII 列按列定位脱敏 |
+| `key_findings`、`star_objects` | `evidence_json` | 只含聚合数，不修改；防御性守卫检出原值即回滚清除事务 |
+| `totals`、`row_ledger`、`stages`、`manifests` | — | 计数与清单不含原值，金额合计原样保留 |
+
+### 10.2 清除单与凭据表
+
+| 表 | 关键字段 | 含义 |
+|---|---|---|
+| `erasure_requests` | `request_id`、`erasure_no`、`member_hash`、`salt_hex`、`status` | 清除单；盐不进接口与导出，状态 `running/interrupted/done` |
+| `erasure_units` | `(request_id, batch_id)`、`status`、`in_count`、`out_count` | 每批次工作单元，续跑只挑非 `done` 单元 |
+| `erasure_evidence` | `value_hash`、`value_length`、`value_kind`、`reason_code` | 不可逆凭据，主键去重，重复执行不新增 |
+| `erasure_suppressions` | `member_hash`、`request_id` | 撤回抑制规则，重放防回灌按盐化哈希命中 |
+
+- 盐化哈希：`sha256("starmodel:member:v1:" + 归一值 + ":" + salt)`，会员哈希与值哈希分域。
+- 凭据 `value_kind` 只报字符类（`digit/cjk/mixed/empty`）与长度，不含任何原字符。
+- 清除格数 `out_count` 只统计实际抹除的原值格；未扫到该会员原值的批次记
+  `ERASURE_NOTHING_FOUND`，不产生凭据但仍登记抑制规则。
+
+### 10.3 边界与计数
+
+- 会员号命中采用边界感知匹配：目标只在被非字母数字字符包围时才算，避免 `0071`
+  误命中比率小数 `0.5714` 或大整数 `9007199254740993`。
+- 清除不改变 `distinct_count`、`null_rate`、`unique_rate`、包含度、基数比与
+  `metric_total`；四账在清除前后保持自洽。
+- 读保护：批次存在未 `done` 清除单时，profile/quarantine/model/spec/batch 详情
+  接口返回 409 `E_ERASURE_IN_PROGRESS`；聚合数接口与批次列表不受影响。

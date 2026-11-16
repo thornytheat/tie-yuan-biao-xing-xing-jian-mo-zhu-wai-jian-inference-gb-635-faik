@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block head_meta %}清除单 {{ payload.total }} 条{% endblock %}
+
+{% block main %}
+<section class="section">
+  <h2>会员撤回授权清除</h2>
+  <p class="empty" style="margin-bottom:12px">
+    按会员清除姓名、手机号、会员号原值；历史批次的键判定聚合数、计数依据与订单金额保留。
+    凭据只含盐化哈希与结构指纹，不含原值、不可反推；重复提交幂等，中断后再次提交自动续跑。
+  </p>
+  <form id="erasure-form" class="pairs" style="max-width:520px">
+    <div>
+      <dt><label for="member_id">会员号</label></dt>
+      <dd><input id="member_id" name="member_id" type="text" placeholder="如 0071" required></dd>
+    </div>
+    <div>
+      <dd><button type="submit">提交清除 / 续跑</button></dd>
+    </div>
+  </form>
+  <pre id="erasure-result" class="mono" style="white-space:pre-wrap;display:none"></pre>
+</section>
+
+<section class="section">
+  <h2>清除单</h2>
+  <div class="wide">
+    <table class="spec" data-sortable>
+      <caption>盐不导出、不进接口；会员以盐化哈希标识</caption>
+      <thead>
+        <tr><th>清除单</th><th>状态</th><th>会员哈希</th><th class="num">批次</th>
+        <th class="num">凭据</th><th class="num">清除格</th><th>建立</th><th>完成</th><th>凭据导出</th></tr>
+      </thead>
+      <tbody>
+        {% for row in payload.rows %}
+        <tr>
+          <td class="mono"><a href="/api/erasure/requests/{{ row.request_id }}" target="_blank">{{ row.request_id }}</a></td>
+          <td>
+            <span class="flag" data-tone="{{ 'ok' if row.status == 'done' else ('warn' if row.status == 'interrupted' else 'bad') }}">{{ row.status_label }}</span>
+          </td>
+          <td class="mono">{{ row.member_hash }}</td>
+          <td class="num">{{ row.batches_done }}/{{ row.batches_total }}</td>
+          <td class="num">{{ row.evidence_total }}</td>
+          <td class="num">{{ row.scrubbed_cells }}</td>
+          <td class="mono">{{ row.created_at }}</td>
+          <td class="mono">{{ row.finished_at or '—' }}</td>
+          <td><a href="/api/erasure/requests/{{ row.request_id }}/evidence.csv">CSV</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="empty">还没有清除单。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var form = document.getElementById('erasure-form');
+  var out = document.getElementById('erasure-result');
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    var memberId = document.getElementById('member_id').value.trim();
+    if (!memberId) { return; }
+    fetch('/api/erasure/members', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ member_id: memberId })
+    }).then(function (resp) {
+      return resp.json().then(function (body) {
+        out.style.display = 'block';
+        out.textContent = JSON.stringify(body, null, 2);
+        if (resp.status === 200) { setTimeout(function () { location.reload(); }, 1200); }
+      });
+    }).catch(function (err) {
+      out.style.display = 'block';
+      out.textContent = String(err);
+    });
+  });
+})();
+</script>
+{% endblock %}
